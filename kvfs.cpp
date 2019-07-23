@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <limits.h>
 #include <iostream>
 #include <vector>
 #include "leveldb/db.h"
@@ -12,7 +14,6 @@
  * key is parent_ino(8bytes) : filename(32bytes)
  *
  */
-
 
 using namespace std;
 
@@ -97,8 +98,18 @@ static int kvfs_lookup_getattr(const char *path, struct stat *statbuf)
         //       blksize_t st_blksize;     /* blocksize for filesystem I/O */
         //       blkcnt_t  st_blocks;      /* number of 512B blocks allocated */
 	//}
+	statbuf->st_dev = 0;
+	statbuf->st_ino = 0;
+	statbuf->st_mode = S_IFDIR;
+	statbuf->st_nlink = 1;
+	statbuf->st_uid = 0;
+	statbuf->st_gid = 0;
+	statbuf->st_rdev = 0;
+	statbuf->st_size = 4096;
+	statbuf->st_blksize = 4096;
+	statbuf->st_blocks = 4096;
 
-	return -ENOENT;
+	return 0;
 }
 
 int kv_getattr(const char *path, struct stat *statbuf)
@@ -328,9 +339,47 @@ static struct fuse_operations kv_oper;
 //	.ioctl       = NULL,
 //	.poll        = NULL,
 //};
+//
+/* 280 has no meaning. I just set # larger enough than \a path */
+#define DBPATH_LEN 280
 
 int main(int argc, char **argv)
 {
+	struct kvfs_data *kd;
+	leveldb::Options options;
+	leveldb::Status status;
+	char path[256], dbpath[DBPATH_LEN]; 
+	int rc;
+
+	/* Set operations */
 	kv_oper.getattr = kv_getattr;
-	return 0;
+
+	/**/
+	kd = (struct kvfs_data *)malloc(sizeof(*kd));
+
+	if (realpath(argv[1], path) == NULL) {
+		fprintf(stderr, "cannot canonicalize path %s.\n", argv[1]);
+		goto free_kd;
+	}
+	snprintf(dbpath, DBPATH_LEN, "%s/.kvfs", path);
+	options.create_if_missing = true;
+	status = leveldb::DB::Open(options, dbpath, &kd->kd_db);
+	if (!status.ok()) {
+		fprintf(stderr, "open kvfs db failed.\n");
+		goto free_kd;
+	}
+
+	argv[argc-2] = argv[argc-1];
+	argv[argc-1] = NULL;
+	argc--;
+	rc = fuse_main(argc, argv, &kv_oper, kd);
+	if (rc < 0) {
+		fprintf(stderr, "fuse_main failed with rc = %d.\n", rc);
+	}
+out:
+	return rc;
+free_kd:
+	free(kd);
+err_out:
+	return rc;
 }
